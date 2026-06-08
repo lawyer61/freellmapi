@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage, ModelListRow } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, hasEnabledToolsModel, type RouteResult } from '../services/router.js';
-import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit, PAYMENT_REQUIRED_COOLDOWN_MS } from '../services/ratelimit.js';
+import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit, PAYMENT_REQUIRED_COOLDOWN_MS, MODEL_FORBIDDEN_COOLDOWN_MS } from '../services/ratelimit.js';
 import { pruneRequestAnalytics } from '../services/request-retention.js';
 import { runEmbeddings, EmbeddingsError } from '../services/embeddings.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
@@ -322,6 +322,13 @@ export function isRetryableError(err: any): boolean {
     // for a model that's been pulled). Rotate to the next model in the chain —
     // setCooldown + the health checker will avoid this model on subsequent requests.
     || msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found')
+    // 403: the key is valid (it passed validateKey, and the health checker
+    // disables truly-forbidden keys) but this specific model is off-limits to
+    // the key's tier — e.g. gpt-4o on GitHub Models' free tier, subscription-only
+    // models on Cloudflare. Another model in the chain is reachable, so fail over
+    // instead of 502-ing the whole request. Paired with isModelAccessForbiddenError
+    // to rule the model out for this request and a day-long bench. See issue #256.
+    || isModelAccessForbiddenError(err)
     // 400: one provider may reject parameters another accepts (e.g. max_tokens
     // limits, unsupported params). The matching pattern is "api error 400"
     // which comes from the OpenAI-compat provider's error formatting, not
@@ -361,6 +368,18 @@ export function isPaymentRequiredError(err: any): boolean {
 export function isModelNotFoundError(err: any): boolean {
   const msg = (err.message ?? '').toLowerCase();
   return msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found');
+}
+
+// A 403 Forbidden returned for a specific model behind an otherwise-valid key.
+// Drives the same whole-model skip as a 404: every key on this platform's tier
+// would be forbidden the same model, so rule it out for the rest of the request
+// rather than trying it again with a sibling key. Distinct from a dead key —
+// validateKey returns false on 401/403, so the health checker disables genuinely
+// forbidden keys; a 403 reaching here is model-not-on-this-tier. See issue #256.
+export function isModelAccessForbiddenError(err: any): boolean {
+  if (err?.status === 403) return true;
+  const msg = (err?.message ?? '').toLowerCase();
+  return msg.includes('403') || msg.includes('forbidden');
 }
 
 // Pull the incremental text out of a streaming chunk for token counting.
@@ -959,7 +978,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // out for the rest of this request — its other keys would 404 the same
         // way. The per-key cooldown below still applies, so cross-request
         // behavior (#66/#76) is unchanged. (PR #111, credits @barbotkonv.)
-        if (isModelNotFoundError(err)) skipModels.add(route.modelDbId);
+        // 404 (removed upstream) and 403 (model off-limits to this key's tier)
+        // both rule the model out: a sibling key on the same platform would
+        // fail it identically, so skip it for the rest of this request.
+        if (isModelNotFoundError(err) || isModelAccessForbiddenError(err)) skipModels.add(route.modelDbId);
 
         // Put this model+key on cooldown and try the next one
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
@@ -970,6 +992,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.keyId,
           isPaymentRequiredError(err)
             ? PAYMENT_REQUIRED_COOLDOWN_MS
+            // A 403 won't clear on the next window (it's a tier/subscription gate,
+            // not a transient limit), so bench this model+key for a day like a 402
+            // instead of re-trying it every request. See issue #256.
+            : isModelAccessForbiddenError(err)
+            ? MODEL_FORBIDDEN_COOLDOWN_MS
             : getCooldownDurationForLimit(route.platform, route.modelId, route.keyId, {
                 rpd: route.rpdLimit,
                 tpd: route.tpdLimit,
