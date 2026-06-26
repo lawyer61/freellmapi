@@ -5,6 +5,7 @@ import { startHealthChecker } from './services/health.js';
 import { applyProxyUrl, applyProxyEnabled, applyProxyBypass } from './lib/proxy.js';
 import { startCatalogSync } from './services/catalog-sync.js';
 import { installProcessSafetyNet } from './lib/process-safety-net.js';
+import { NodeScheduler } from './lib/scheduler.js';
 
 const PORT = process.env.PORT ?? 3001;
 // Dual-stack ('::') by default so the dashboard is reachable over both IPv4
@@ -16,6 +17,8 @@ async function main() {
   // Install first so a late provider socket reset (undici HTTP/2 error with no
   // listener) can't take the proxy down. Genuine bugs still exit 1.
   installProcessSafetyNet();
+
+  const scheduler = new NodeScheduler();
 
   initDb();
 
@@ -31,8 +34,8 @@ async function main() {
     const display = host.includes(':') ? `[${host}]` : host;
     console.log(`Server running on http://${display}:${PORT}`);
     console.log(`Proxy endpoint: http://${display}:${PORT}/v1/chat/completions`);
-    startHealthChecker();
-    startCatalogSync();
+    startHealthChecker(scheduler);
+    startCatalogSync(scheduler);
   };
 
   const server = app.listen(Number(PORT), HOST, onReady(HOST));

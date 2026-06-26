@@ -4,6 +4,7 @@ import { getDb, getSetting, setSetting } from '../db/index.js';
 import { hasProvider } from '../providers/index.js';
 import { MEDIA_PLATFORMS } from './media.js';
 import type { Platform } from '@freellmapi/shared/types.js';
+import type { Scheduler } from '../lib/scheduler.js';
 
 // Generative-media modalities are routed into the separate media_models table
 // (see services/media.ts), never into the chat `models` table.
@@ -475,11 +476,11 @@ export function reapplyCachedCatalog(): { reapplied: boolean; version?: string }
   }
 }
 
-let intervalId: ReturnType<typeof setInterval> | null = null;
-let bootTimer: ReturnType<typeof setTimeout> | null = null;
+let cancelBootTimer: (() => void) | null = null;
+let cancelInterval: (() => void) | null = null;
 
-export function startCatalogSync(): void {
-  if (intervalId) return;
+export function startCatalogSync(scheduler: Scheduler): void {
+  if (cancelInterval) return;
   if (process.env.CATALOG_SYNC_DISABLED === '1') {
     console.log('[catalog-sync] disabled via CATALOG_SYNC_DISABLED=1');
     return;
@@ -489,18 +490,18 @@ export function startCatalogSync(): void {
     void refreshLicenseStatus();
     void syncCatalog();
   };
-  bootTimer = setTimeout(run, BOOT_DELAY_MS);
-  intervalId = setInterval(run, SYNC_INTERVAL_MS);
+  cancelBootTimer = scheduler.after(BOOT_DELAY_MS, run);
+  cancelInterval = scheduler.every(SYNC_INTERVAL_MS, run);
   console.log(`[catalog-sync] polling ${catalogBaseUrl()} every ${SYNC_INTERVAL_MS / 3600000}h`);
 }
 
 export function stopCatalogSync(): void {
-  if (bootTimer) {
-    clearTimeout(bootTimer);
-    bootTimer = null;
+  if (cancelBootTimer) {
+    cancelBootTimer();
+    cancelBootTimer = null;
   }
-  if (intervalId) {
-    clearInterval(intervalId);
-    intervalId = null;
+  if (cancelInterval) {
+    cancelInterval();
+    cancelInterval = null;
   }
 }
