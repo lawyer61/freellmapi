@@ -29,6 +29,7 @@ import { PageHeader } from '@/components/page-header'
 import { FloatingBar } from '@/components/floating-bar'
 import { ModelsTabs } from '@/components/models-tabs'
 import { Tooltip } from '@/components/tooltip'
+import { PenaltyInspector } from '@/components/penalty-inspector'
 
 export interface FallbackEntry {
   modelDbId: number
@@ -54,6 +55,10 @@ export interface FallbackEntry {
   contextWindow?: number | null
   supportsVision: boolean
   supportsTools: boolean
+  source?: 'catalog' | 'custom'
+  keyId?: number | null
+  keyLabel?: string | null
+  hasOverrides?: boolean
   keyCount: number
   // Logical-model grouping (sent by the server when unify is relevant). Absent
   // for ungrouped rows; the UI falls back to a per-row "solo" group then.
@@ -295,6 +300,7 @@ const platformColors: Record<string, string> = {
   routeway:    '#14b8a6',
   bazaarlink:  '#e11d48',
   ainative:    '#22c55e',
+  aihorde:     '#dc2626',
 }
 
 // A 0..1 value as a thin horizontal bar with the number beside it.
@@ -849,6 +855,8 @@ export default function FallbackPage() {
             {isManual ? t('strategies.modeManualHint') : t('strategies.modeScoreHint')}
           </p>
         </section>
+
+        <PenaltyInspector />
 
         {/* Unified routing / fallback table */}
         {isLoading ? (

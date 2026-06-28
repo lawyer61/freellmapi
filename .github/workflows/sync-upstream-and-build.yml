@@ -24,13 +24,14 @@ env:
 jobs:
   sync-and-build:
     name: Sync upstream and publish latest
-    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
+    if: github.event_name != 'push' || github.event.head_commit.author.email != '41898282+github-actions[bot]@users.noreply.github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
 
       - name: Merge upstream
         id: sync
